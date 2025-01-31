@@ -239,20 +239,48 @@ def transcribe_file(
 
 async def audio_receiver(ws: WebSocket, audio_stream: AudioStream, vad_auto_close: bool = True) -> None:
     config = get_config()  # HACK
+    def periods_of_activity(timestamps, window_start_sec):
+        return [
+            (window_start_sec + ts['start']/SAMPLES_PER_SECOND, window_start_sec + ts['end']/SAMPLES_PER_SECOND)
+            for ts in timestamps
+        ]
+    def periods_of_inactivity(timestamps, window_start_sec, window_end_sec):
+        if len(timestamps) == 0:
+            return [(window_start_sec, window_end_sec)]
+        result = [
+            (window_start_sec + timestamps[i-1]['end']/SAMPLES_PER_SECOND, window_start_sec + timestamps[i]['start']/SAMPLES_PER_SECOND)
+            for i in range(1, len(timestamps))
+        ]
+        if timestamps[0]['start'] > 0:
+            result.insert(0, (window_start_sec, window_start_sec + timestamps[0]['start']/SAMPLES_PER_SECOND))
+        if timestamps[-1]['end'] < (window_end_sec - window_start_sec) * SAMPLES_PER_SECOND:
+            result.append((window_start_sec + timestamps[-1]['end']/SAMPLES_PER_SECOND, window_end_sec))
+        return result
+
+    def fmt_timestamps(start, end):
+        return f"({start:.2f}s-{end:.2f}s)"
     try:
         while True:
             bytes_ = await asyncio.wait_for(ws.receive_bytes(), timeout=config.max_no_data_seconds)
             logger.debug(f"Received {len(bytes_)} bytes of audio data")
             audio_samples = audio_samples_from_file(BytesIO(bytes_))
             audio_stream.extend(audio_samples)
-            if not vad_auto_close:
-                continue
+            logger.debug(f"Total audio stream duration: {audio_stream.duration:.2f}s")
             if audio_stream.duration - config.inactivity_window_seconds >= 0:
-                audio = audio_stream.after(audio_stream.duration - config.inactivity_window_seconds)
+                window_start = audio_stream.duration - config.inactivity_window_seconds
+                audio = audio_stream.after(window_start)
                 vad_opts = VadOptions(min_silence_duration_ms=500, speech_pad_ms=0)
                 # NOTE: This is a synchronous operation that runs every time new data is received.
                 # This shouldn't be an issue unless data is being received in tiny chunks or the user's machine is a potato.  # noqa: E501
                 timestamps = get_speech_timestamps(audio.data, vad_opts)
+                if activity := periods_of_activity(timestamps, window_start):
+                    activity_str = "activity in " + ", ".join([fmt_timestamps(a, b) for a, b in activity])
+                else:
+                    activity_str = "no activity"
+                logger.info(f"VAD: Examined {fmt_timestamps(window_start, audio_stream.duration)}, {activity_str}")
+                inactivity = periods_of_inactivity(timestamps, window_start, audio_stream.duration)
+                if inactivity:
+                    logger.info(f"VAD: Inactivity in {', '.join([fmt_timestamps(a, b) for a, b in inactivity])}")
                 if len(timestamps) == 0:
                     logger.info(f"No speech detected in the last {config.inactivity_window_seconds} seconds.")
                     if vad_auto_close:
