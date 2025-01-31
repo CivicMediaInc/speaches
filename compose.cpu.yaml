@@ -14,7 +14,8 @@ services:
         - "cm-speaches-cpu:latest"
         - "cm-speaches-cpu:latest-v1"
     environment:
-      - WHISPER__MODEL=Systran/faster-whisper-small
+      #- WHISPER__MODEL=Systran/faster-whisper-tiny
+      - WHISPER__MODEL=Systran/faster-whisper-base
       - MAX_NO_DATA_SECONDS=5.0  # default is 1.0
       # # Configs for VAD
       # - MAX_INACTIVITY_SECONDS=2.5
